@@ -155,7 +155,7 @@ Pull requests are welcome! If you have ideas to make this better — new feature
 
 ## 📄 License
 
-ISC
+[MIT](./LICENSE) — use it, break it, fork it, we don't mind.
 
 ---
 
