@@ -17,7 +17,7 @@ What if there was a place where conversations actually went beyond assignments? 
 >
 > _...and who knows, maybe you'll find a girlfriend/boyfriend too. We're not promising, but we're not NOT promising either_ 👀💜
 
-No bots. No fake profiles. No "send bobs" messages. Just verified college students from across the country — matched instantly, Omegle-style.
+No bots. No fake profiles. No random weirdos. Just verified college students from across the country — matched instantly, Omegle-style.
 
 Think of it as Omegle — but safer, smarter, and made for YOUR campus. The Omegle your parents wouldn't freak out about. _(okay maybe a little)_ 😏
 
@@ -31,7 +31,7 @@ Think of it as Omegle — but safer, smarter, and made for YOUR campus. The Omeg
 - 💬 **Real-time Chat** — Instant messaging with typing indicators. You'll know when they're typing that roast 🔥
 - 📹 **Video Calls** — Face-to-face via WebRTC. Time to finally comb your hair
 - ⏭️ **Skip / Next** — Not vibing? Hit skip. No hard feelings. It's not you, it's the algorithm
-- 🔐 **College Email Only** — No college email = no entry. Sorry uncle, this isn't for you 🚫
+- 🔐 **College Email Only** — No `.edu` email? No entry. This club has a dress code 🚫
 - 👤 **Profiles** — Avatar, bio, interests. Make yourself look cooler than you actually are
 - 🌙 **Dark / Light Mode** — Switch themes based on your mood. Or your eye damage level
 - 🟢 **Online Status** — See who's online. Stalk responsibly
@@ -138,7 +138,7 @@ Open [http://localhost:5173](http://localhost:5173) and start matching! 🎉
 
 ## 🤝 How It Works
 
-1. 📧 **Register** with your college email → prove you're not a bot (or your uncle)
+1. 📧 **Register** with your college email → prove you're actually a student
 2. 🔑 **Login** and set up your profile — avatar, bio, interests. First impressions matter bestie
 3. 🎲 Hit **"Find a Match"** → get paired with a student from another college
 4. 💬 **Chat** in real-time or go bold and start a **video call** 📹
@@ -162,4 +162,8 @@ ISC
 <p align="center">
   <b>Built with 💜 by <a href="https://github.com/poshithnandyala">Poshith</a></b><br>
   <i>If this project helped you find a friend, a coding partner, or even a crush — star the repo. That's all the payment I need. ⭐</i>
+</p>
+
+<p align="center">
+  <sub>📝 <i>This README was ghostwritten by AI because the developer was too busy matching with people on his own app.</i></sub>
 </p>
