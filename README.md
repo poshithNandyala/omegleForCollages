@@ -106,7 +106,7 @@ npm install
 Create a `.env` file (refer `.env.example`):
 
 ```env
-PORT=8001
+PORT=8001                # yes 8001, not 8000. be different.
 MONGODB_URI=mongodb+srv://username:password@cluster.mongodb.net
 CORS_ORIGIN=http://localhost:5173
 ACCESS_TOKEN_SECRET=your-access-token-secret
