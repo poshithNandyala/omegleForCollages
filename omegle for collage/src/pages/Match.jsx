@@ -35,13 +35,13 @@ export default function Match() {
     const typingTimeout = useRef(null)
     const roomIdRef = useRef(null)
     const pendingCandidates = useRef([])
-    const isInitiator = useRef(false)
+    const iceRestartTimer = useRef(null)
 
     const socket = getSocket()
 
     useEffect(() => { roomIdRef.current = roomId }, [roomId])
 
-    // Attach local stream to video element whenever it's ready
+    // Attach local stream to video element when ready
     useEffect(() => {
         if (localVideoRef.current && localStream.current) {
             localVideoRef.current.srcObject = localStream.current
@@ -62,17 +62,18 @@ export default function Match() {
     }, [])
 
     const cleanup = useCallback(() => {
+        clearTimeout(iceRestartTimer.current)
         localStream.current?.getTracks().forEach(t => t.stop())
         localStream.current = null
         if (peerConnection.current) {
             peerConnection.current.onicecandidate = null
             peerConnection.current.ontrack = null
             peerConnection.current.oniceconnectionstatechange = null
+            peerConnection.current.onnegotiationneeded = null
             peerConnection.current.close()
             peerConnection.current = null
         }
         pendingCandidates.current = []
-        isInitiator.current = false
         if (localVideoRef.current) localVideoRef.current.srcObject = null
         if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null
         setLocalReady(false)
@@ -80,8 +81,20 @@ export default function Match() {
         setPeerState('new')
     }, [])
 
-    const makePeer = useCallback(() => {
+    // Get user media (camera + mic)
+    const getLocalStream = useCallback(async () => {
+        if (localStream.current) return localStream.current
+        const stream = await navigator.mediaDevices.getUserMedia(getConstraints())
+        localStream.current = stream
+        setLocalReady(true)
+        return stream
+    }, [getConstraints])
+
+    const makePeer = useCallback((stream) => {
         const pc = new RTCPeerConnection({ iceServers, iceCandidatePoolSize: 10 })
+
+        // Add all tracks from local stream
+        stream.getTracks().forEach(t => pc.addTrack(t, stream))
 
         pc.onicecandidate = (e) => {
             if (e.candidate && socket) {
@@ -92,6 +105,8 @@ export default function Match() {
         pc.ontrack = (e) => {
             if (remoteVideoRef.current && e.streams[0]) {
                 remoteVideoRef.current.srcObject = e.streams[0]
+                // Force play to handle autoplay restrictions
+                remoteVideoRef.current.play().catch(() => {})
                 setRemoteReady(true)
             }
         }
@@ -99,11 +114,15 @@ export default function Match() {
         pc.oniceconnectionstatechange = () => {
             const s = pc.iceConnectionState
             setPeerState(s)
-            if (s === 'failed') pc.restartIce()
-            if (s === 'disconnected') {
-                setTimeout(() => {
+            clearTimeout(iceRestartTimer.current)
+            if (s === 'failed') {
+                pc.restartIce()
+            } else if (s === 'disconnected') {
+                iceRestartTimer.current = setTimeout(() => {
                     if (pc.iceConnectionState === 'disconnected') pc.restartIce()
                 }, 3000)
+            } else if (s === 'connected' || s === 'completed') {
+                setRemoteReady(true)
             }
         }
 
@@ -111,61 +130,34 @@ export default function Match() {
         return pc
     }, [iceServers, socket])
 
-    // Get camera and start call as initiator
-    const startCall = useCallback(async () => {
-        try {
-            const stream = await navigator.mediaDevices.getUserMedia(getConstraints())
-            localStream.current = stream
-            setLocalReady(true)
-            const pc = makePeer()
-            stream.getTracks().forEach(t => pc.addTrack(t, stream))
-            const offer = await pc.createOffer()
-            await pc.setLocalDescription(offer)
-            socket.emit('video-offer', { roomId: roomIdRef.current, offer })
-            isInitiator.current = true
-        } catch {
-            toast.error('Camera/mic access denied')
-        }
-    }, [getConstraints, makePeer, socket])
-
-    // Answer incoming call
-    const answerCall = useCallback(async (offer) => {
-        try {
-            if (!localStream.current) {
-                const stream = await navigator.mediaDevices.getUserMedia(getConstraints())
-                localStream.current = stream
-                setLocalReady(true)
-            }
-            const pc = makePeer()
-            localStream.current.getTracks().forEach(t => pc.addTrack(t, localStream.current))
-            await pc.setRemoteDescription(new RTCSessionDescription(offer))
-            for (const c of pendingCandidates.current) {
-                await pc.addIceCandidate(new RTCIceCandidate(c))
-            }
-            pendingCandidates.current = []
-            const answer = await pc.createAnswer()
-            await pc.setLocalDescription(answer)
-            socket.emit('video-answer', { roomId: roomIdRef.current, answer })
-        } catch (err) {
-            console.error('answer error:', err)
-            toast.error('Video connection failed')
-        }
-    }, [getConstraints, makePeer, socket])
-
     useEffect(() => {
         if (!socket) return
 
         socket.on('waiting', () => setStatus('searching'))
 
-        socket.on('stranger-found', ({ roomId: rId, stranger: s }) => {
+        // MATCHED — only initiator creates offer
+        socket.on('stranger-found', async ({ roomId: rId, stranger: s, initiator }) => {
             setStatus('connected')
             setStranger(s)
             setRoomId(rId)
             setMessages([])
             setChatOpen(true)
+            setRemoteReady(false)
+            setPeerState('new')
             toast.success('Stranger found! 👋')
-            // AUTO-START video — initiator starts call immediately
-            setTimeout(() => startCall(), 500)
+
+            // Only the initiator starts the WebRTC call
+            if (initiator) {
+                try {
+                    const stream = await getLocalStream()
+                    const pc = makePeer(stream)
+                    const offer = await pc.createOffer()
+                    await pc.setLocalDescription(offer)
+                    socket.emit('video-offer', { roomId: rId, offer })
+                } catch {
+                    toast.error('Camera/mic access denied')
+                }
+            }
         })
 
         socket.on('new-message', ({ senderId, content, timestamp }) => {
@@ -183,19 +175,36 @@ export default function Match() {
             toast('Stranger left', { icon: '👋' })
         })
 
+        // NON-INITIATOR receives offer → gets camera → answers
         socket.on('video-offer', async ({ offer }) => {
-            await answerCall(offer)
+            try {
+                const stream = await getLocalStream()
+                const pc = makePeer(stream)
+                await pc.setRemoteDescription(new RTCSessionDescription(offer))
+                // Flush any ICE candidates that arrived before remote description
+                for (const c of pendingCandidates.current) {
+                    await pc.addIceCandidate(new RTCIceCandidate(c)).catch(() => {})
+                }
+                pendingCandidates.current = []
+                const answer = await pc.createAnswer()
+                await pc.setLocalDescription(answer)
+                socket.emit('video-answer', { roomId: roomIdRef.current, answer })
+            } catch (err) {
+                console.error('video-offer error:', err)
+                toast.error('Video connection failed')
+            }
         })
 
         socket.on('video-answer', async ({ answer }) => {
             try {
-                await peerConnection.current?.setRemoteDescription(new RTCSessionDescription(answer))
+                if (!peerConnection.current) return
+                await peerConnection.current.setRemoteDescription(new RTCSessionDescription(answer))
                 for (const c of pendingCandidates.current) {
-                    await peerConnection.current?.addIceCandidate(new RTCIceCandidate(c))
+                    await peerConnection.current.addIceCandidate(new RTCIceCandidate(c)).catch(() => {})
                 }
                 pendingCandidates.current = []
             } catch (err) {
-                console.error('answer-set error:', err)
+                console.error('video-answer error:', err)
             }
         })
 
@@ -209,10 +218,7 @@ export default function Match() {
             } catch {}
         })
 
-        socket.on('video-ended', () => {
-            cleanup()
-        })
-
+        socket.on('video-ended', () => cleanup())
         socket.on('ice-servers', ({ iceServers: s }) => setIceServers(s))
         socket.on('report-submitted', () => toast.success('Report submitted'))
         socket.on('account-suspended', () => {
@@ -226,7 +232,7 @@ export default function Match() {
               'ice-servers','report-submitted','account-suspended'
             ].forEach(e => socket.off(e))
         }
-    }, [socket, cleanup, startCall, answerCall])
+    }, [socket, cleanup, getLocalStream, makePeer])
 
     useEffect(() => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -250,6 +256,12 @@ export default function Match() {
         setStranger(null)
         setRoomId(null)
         setMessages([])
+    }
+
+    const nextStranger = () => {
+        disconnect()
+        setRemoteReady(false)
+        setTimeout(() => findStranger(), 300)
     }
 
     const stopSearching = () => {
@@ -298,7 +310,7 @@ export default function Match() {
         return (
             <div className="flex-1 flex flex-col items-center justify-center h-[calc(100vh-56px)] sm:h-[calc(100vh-64px)] bg-gray-950 px-4">
                 <div className="w-20 h-20 sm:w-24 sm:h-24 bg-brand/10 rounded-3xl flex items-center justify-center mb-6 sm:mb-8">
-                    <Shuffle size={36} className="text-brand" />
+                    <Video size={36} className="text-brand" />
                 </div>
                 <h1 className="text-2xl sm:text-4xl font-extrabold text-white mb-3 text-center">Start Matching</h1>
                 <p className="text-gray-400 mb-6 sm:mb-8 max-w-md text-center text-sm sm:text-lg">
@@ -343,11 +355,11 @@ export default function Match() {
         )
     }
 
-    // ===================== CONNECTED — FULL OMEGLE LAYOUT =====================
+    // ===================== CONNECTED — OMEGLE LAYOUT =====================
     return (
         <div className="flex flex-col h-[calc(100vh-56px)] sm:h-[calc(100vh-64px)] bg-black overflow-hidden relative">
 
-            {/* ===== FULL SCREEN VIDEO — SIDE BY SIDE ===== */}
+            {/* FULL SCREEN VIDEO — SIDE BY SIDE */}
             <div className="flex-1 grid grid-cols-2 gap-[1px] min-h-0">
 
                 {/* YOUR VIDEO */}
@@ -361,10 +373,15 @@ export default function Match() {
                     {(!localReady || isCameraOff) && (
                         <div className="absolute inset-0 flex items-center justify-center bg-gray-900">
                             <div className="text-center">
-                                <div className="w-14 h-14 sm:w-20 sm:h-20 rounded-full bg-gray-800 flex items-center justify-center mx-auto mb-2">
+                                <div className="w-14 h-14 sm:w-20 sm:h-20 rounded-full bg-gray-800 flex items-center justify-center mx-auto">
                                     <span className="text-xl sm:text-3xl font-bold text-gray-500">{user?.fullName?.[0] || 'Y'}</span>
                                 </div>
-                                {!localReady && <p className="text-xs text-gray-600 mt-2">Starting camera...</p>}
+                                {!localReady && (
+                                    <>
+                                        <div className="w-6 h-6 border-2 border-gray-700 border-t-brand rounded-full animate-spin mx-auto mt-3" />
+                                        <p className="text-[10px] sm:text-xs text-gray-600 mt-2">Starting camera...</p>
+                                    </>
+                                )}
                             </div>
                         </div>
                     )}
@@ -383,11 +400,11 @@ export default function Match() {
                     {!remoteReady && (
                         <div className="absolute inset-0 flex items-center justify-center bg-gray-900">
                             <div className="text-center">
-                                <div className="w-14 h-14 sm:w-20 sm:h-20 rounded-full bg-gray-800 flex items-center justify-center mx-auto mb-2">
+                                <div className="w-14 h-14 sm:w-20 sm:h-20 rounded-full bg-gray-800 flex items-center justify-center mx-auto">
                                     <span className="text-xl sm:text-3xl font-bold text-gray-500">{stranger?.fullName?.[0] || '?'}</span>
                                 </div>
                                 <div className="w-6 h-6 border-2 border-gray-700 border-t-brand rounded-full animate-spin mx-auto mt-3" />
-                                <p className="text-xs text-gray-600 mt-2">Connecting...</p>
+                                <p className="text-[10px] sm:text-xs text-gray-600 mt-2">Connecting...</p>
                             </div>
                         </div>
                     )}
@@ -400,34 +417,45 @@ export default function Match() {
                             <span className="text-gray-300 text-[9px] sm:text-[11px]">{stranger.college}</span>
                         </div>
                     )}
+                    {peerState === 'failed' && (
+                        <div className="absolute inset-0 flex items-center justify-center bg-black/70 z-10">
+                            <div className="text-center">
+                                <p className="text-red-400 text-sm font-medium mb-2">Connection lost</p>
+                                <p className="text-gray-500 text-xs">Attempting to reconnect...</p>
+                            </div>
+                        </div>
+                    )}
                 </div>
             </div>
 
-            {/* ===== VIDEO CONTROLS — Floating center ===== */}
-            <div className="absolute left-1/2 -translate-x-1/2 bottom-[calc(40%+8px)] sm:bottom-[calc(35%+12px)] flex items-center gap-3 sm:gap-4 z-30">
-                <button onClick={toggleMute}
-                    className={`w-11 h-11 sm:w-12 sm:h-12 rounded-full flex items-center justify-center transition-all shadow-lg ${
-                        isMuted ? 'bg-red-500 text-white' : 'bg-black/40 backdrop-blur-md text-white hover:bg-black/60'
-                    }`}>
-                    {isMuted ? <MicOff size={20} /> : <Mic size={20} />}
-                </button>
-                <button onClick={disconnect}
-                    className="w-14 h-14 sm:w-16 sm:h-16 rounded-full bg-red-500 text-white flex items-center justify-center hover:bg-red-600 transition-all shadow-xl shadow-red-500/30">
-                    <PhoneOff size={24} />
-                </button>
-                <button onClick={toggleCam}
-                    className={`w-11 h-11 sm:w-12 sm:h-12 rounded-full flex items-center justify-center transition-all shadow-lg ${
-                        isCameraOff ? 'bg-red-500 text-white' : 'bg-black/40 backdrop-blur-md text-white hover:bg-black/60'
-                    }`}>
-                    {isCameraOff ? <VideoOff size={20} /> : <Video size={20} />}
-                </button>
-                <button onClick={() => { disconnect(); findStranger() }}
-                    className="w-11 h-11 sm:w-12 sm:h-12 rounded-full bg-brand text-white flex items-center justify-center hover:bg-brand-hover transition-all shadow-lg">
-                    <SkipForward size={20} />
-                </button>
+
+            {/* VIDEO CONTROLS — Floating center */}
+            <div className="absolute left-1/2 -translate-x-1/2 z-30" style={{ bottom: chatOpen ? 'calc(40% + 8px)' : '60px' }}>
+                <div className="flex items-center gap-3 sm:gap-4">
+                    <button onClick={toggleMute}
+                        className={`w-11 h-11 sm:w-12 sm:h-12 rounded-full flex items-center justify-center transition-all shadow-lg ${
+                            isMuted ? 'bg-red-500 text-white' : 'bg-black/40 backdrop-blur-md text-white hover:bg-black/60'
+                        }`}>
+                        {isMuted ? <MicOff size={20} /> : <Mic size={20} />}
+                    </button>
+                    <button onClick={disconnect}
+                        className="w-14 h-14 sm:w-16 sm:h-16 rounded-full bg-red-500 text-white flex items-center justify-center hover:bg-red-600 transition-all shadow-xl shadow-red-500/30">
+                        <PhoneOff size={24} />
+                    </button>
+                    <button onClick={toggleCam}
+                        className={`w-11 h-11 sm:w-12 sm:h-12 rounded-full flex items-center justify-center transition-all shadow-lg ${
+                            isCameraOff ? 'bg-red-500 text-white' : 'bg-black/40 backdrop-blur-md text-white hover:bg-black/60'
+                        }`}>
+                        {isCameraOff ? <VideoOff size={20} /> : <Video size={20} />}
+                    </button>
+                    <button onClick={nextStranger}
+                        className="w-11 h-11 sm:w-12 sm:h-12 rounded-full bg-brand text-white flex items-center justify-center hover:bg-brand-hover transition-all shadow-lg" title="Next stranger">
+                        <SkipForward size={20} />
+                    </button>
+                </div>
             </div>
 
-            {/* Report button — top right */}
+            {/* Report — top right */}
             <div className="absolute top-2 right-2 sm:top-3 sm:right-3 z-30">
                 <div className="relative">
                     <button onClick={() => setShowReport(!showReport)}
@@ -438,7 +466,7 @@ export default function Match() {
                         <div className="absolute right-0 top-full mt-1 bg-gray-900 border border-gray-700 rounded-xl shadow-2xl py-1.5 w-44 z-50">
                             {['harassment', 'inappropriate', 'spam', 'underage', 'other'].map(reason => (
                                 <button key={reason} onClick={() => reportUser(reason)}
-                                    className="w-full text-left px-4 py-2.5 text-sm text-gray-300 hover:bg-gray-800 capitalize first:rounded-t-xl last:rounded-b-xl">
+                                    className="w-full text-left px-4 py-2.5 text-sm text-gray-300 hover:bg-gray-800 capitalize">
                                     {reason}
                                 </button>
                             ))}
@@ -447,12 +475,8 @@ export default function Match() {
                 </div>
             </div>
 
-            {/* ===== CHAT OVERLAY — Bottom of screen, on top of video ===== */}
-            <div className={`absolute bottom-0 left-0 right-0 z-20 transition-all duration-300 ${
-                chatOpen ? 'h-[40%] sm:h-[35%]' : 'h-12'
-            }`}>
-
-                {/* Chat toggle handle */}
+            {/* CHAT OVERLAY — on top of video */}
+            <div className={`absolute bottom-0 left-0 right-0 z-20 transition-all duration-300 ${chatOpen ? 'h-[40%] sm:h-[35%]' : 'h-10'}`}>
                 <button onClick={() => setChatOpen(p => !p)}
                     className="absolute -top-0 left-0 right-0 h-10 flex items-center justify-center cursor-pointer z-10">
                     <div className="flex items-center gap-2 bg-black/60 backdrop-blur-md px-4 py-1.5 rounded-full">
@@ -464,8 +488,7 @@ export default function Match() {
                 </button>
 
                 {chatOpen && (
-                    <div className="h-full flex flex-col bg-gradient-to-t from-black/90 via-black/70 to-transparent pt-6">
-                        {/* Messages */}
+                    <div className="h-full flex flex-col bg-gradient-to-t from-black/90 via-black/75 to-transparent pt-6">
                         <div className="flex-1 overflow-y-auto px-3 sm:px-5 py-2 space-y-1.5 min-h-0 no-scrollbar">
                             {messages.length === 0 && (
                                 <div className="text-center py-3">
@@ -480,9 +503,7 @@ export default function Match() {
                                 ) : (
                                     <div key={i} className={`flex ${msg.fromMe ? 'justify-end' : 'justify-start'}`}>
                                         <div className={`max-w-[80%] px-3 py-1.5 sm:px-4 sm:py-2 rounded-2xl text-sm leading-relaxed ${
-                                            msg.fromMe
-                                                ? 'bg-brand text-white rounded-br-sm'
-                                                : 'bg-white/15 text-white rounded-bl-sm'
+                                            msg.fromMe ? 'bg-brand text-white rounded-br-sm' : 'bg-white/15 text-white rounded-bl-sm'
                                         }`}>
                                             {msg.content}
                                         </div>
@@ -503,7 +524,6 @@ export default function Match() {
                             <div ref={messagesEndRef} />
                         </div>
 
-                        {/* Input */}
                         <form onSubmit={sendMessage} className="px-3 sm:px-5 py-2 sm:py-3 flex gap-2 shrink-0">
                             <input
                                 value={input} onChange={handleInput}

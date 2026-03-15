@@ -121,10 +121,12 @@ export const initializeSocket = async (server) => {
 
                 socket.emit("stranger-found", {
                     roomId,
+                    initiator: true,
                     stranger: { fullName: partner.userData?.fullName, college: partner.userData?.college, avatar: partner.userData?.avatar }
                 })
                 io.to(partner.socketId).emit("stranger-found", {
                     roomId,
+                    initiator: false,
                     stranger: { fullName: socket.userData?.fullName, college: socket.userData?.college, avatar: socket.userData?.avatar }
                 })
 
