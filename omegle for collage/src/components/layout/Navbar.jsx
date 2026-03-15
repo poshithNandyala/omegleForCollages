@@ -15,12 +15,12 @@ export default function Navbar() {
 
     return (
         <nav className="sticky top-0 z-50 bg-dark dark:bg-zinc-900 text-white border-b border-transparent dark:border-zinc-800">
-            <div className="w-full max-w-[1400px] mx-auto px-6 h-16 flex items-center justify-between">
+            <div className="w-full max-w-[1400px] mx-auto px-3 sm:px-6 h-14 sm:h-16 flex items-center justify-between">
                 <Link to="/" className="flex items-center gap-2.5">
                     <div className="w-8 h-8 bg-brand rounded-lg flex items-center justify-center">
                         <Zap size={16} className="text-white" />
                     </div>
-                    <span className="text-lg font-bold tracking-tight">CampusConnect</span>
+                    <span className="text-base sm:text-lg font-bold tracking-tight">CampusConnect</span>
                 </Link>
 
                 <div className="flex items-center gap-3">

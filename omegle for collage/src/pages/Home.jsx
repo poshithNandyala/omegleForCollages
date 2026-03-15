@@ -19,7 +19,7 @@ export default function Home() {
         <div className="flex-1 flex flex-col min-h-screen bg-white dark:bg-zinc-950">
             {/* Hero */}
             <section className="flex-1 flex items-center">
-                <div className="w-full max-w-7xl mx-auto px-6 sm:px-10 py-24 lg:py-0 min-h-[calc(100vh-64px)] flex items-center">
+                <div className="w-full max-w-7xl mx-auto px-4 sm:px-10 py-12 sm:py-24 lg:py-0 min-h-[calc(100vh-64px)] flex items-center">
                     <div className="w-full flex flex-col lg:flex-row items-center gap-16 lg:gap-24">
                         {/* Left content */}
                         <div className="flex-1 max-w-2xl">
@@ -30,7 +30,7 @@ export default function Home() {
                                 </div>
                             )}
 
-                            <h1 className="text-5xl sm:text-6xl lg:text-7xl font-extrabold text-dark dark:text-white leading-[1.05] tracking-tight">
+                            <h1 className="text-4xl sm:text-5xl lg:text-7xl font-extrabold text-dark dark:text-white leading-[1.05] tracking-tight">
                                 Meet your<br />
                                 <span className="text-brand">campus.</span>
                             </h1>
@@ -61,7 +61,7 @@ export default function Home() {
                                 )}
                             </div>
 
-                            <div className="flex items-center gap-6 mt-12 text-sm text-slate-400 dark:text-zinc-500">
+                            <div className="flex flex-wrap items-center gap-4 sm:gap-6 mt-8 sm:mt-12 text-xs sm:text-sm text-slate-400 dark:text-zinc-500">
                                 <div className="flex items-center gap-2">
                                     <Shield size={16} className="text-brand" />
                                     <span>College verified</span>
@@ -79,7 +79,7 @@ export default function Home() {
 
                         {/* Right feature grid */}
                         <div className="flex-1 w-full max-w-xl">
-                            <div className="grid grid-cols-2 gap-5">
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 sm:gap-5">
                                 {[
                                     { icon: Shield, title: 'College Verified', desc: 'Only .edu & .ac.in emails allowed. Real students only.' },
                                     { icon: Video, title: 'Video Chat', desc: 'Face-to-face video calls with strangers on campus.' },

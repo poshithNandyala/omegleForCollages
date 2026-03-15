@@ -65,10 +65,10 @@ export default function Profile() {
 
     return (
         <div className="flex-1 bg-gray-50 dark:bg-zinc-950">
-            <div className="w-full max-w-[1400px] mx-auto px-6 py-8">
+            <div className="w-full max-w-[1400px] mx-auto px-4 sm:px-6 py-6 sm:py-8">
                 <h1 className="text-2xl font-bold text-gray-900 dark:text-zinc-100 mb-6">Your Profile</h1>
 
-                <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 sm:gap-8">
                     {/* Left: Avatar & info card */}
                     <div className="lg:col-span-1">
                         <div className="bg-white dark:bg-zinc-900 rounded-xl border border-gray-200 dark:border-zinc-800 p-8 text-center">
