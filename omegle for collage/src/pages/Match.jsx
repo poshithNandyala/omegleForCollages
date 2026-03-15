@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { Shuffle, X, Send, Video, VideoOff, Mic, MicOff, SkipForward, Filter } from 'lucide-react'
+import { Shuffle, X, Send, Video, VideoOff, Mic, MicOff, SkipForward, Filter, AlertTriangle } from 'lucide-react'
 import { Button, Select } from '../components/ui'
 import { getSocket } from '../lib/socket'
 import useAuthStore from '../stores/authStore'
@@ -18,6 +18,8 @@ export default function Match() {
     const [videoActive, setVideoActive] = useState(false)
     const [isMuted, setIsMuted] = useState(false)
     const [isCameraOff, setIsCameraOff] = useState(false)
+    const [iceServers, setIceServers] = useState([{ urls: 'stun:stun.l.google.com:19302' }, { urls: 'stun:stun1.l.google.com:19302' }])
+    const [showReport, setShowReport] = useState(false)
 
     const messagesEndRef = useRef(null)
     const localVideoRef = useRef(null)
@@ -60,10 +62,14 @@ export default function Match() {
             await peerConnection.current?.addIceCandidate(new RTCIceCandidate(candidate))
         })
         socket.on('video-ended', () => { cleanupVideo(); setVideoActive(false) })
+        socket.on('ice-servers', ({ iceServers: servers }) => setIceServers(servers))
+        socket.on('report-submitted', () => toast.success('Report submitted. User disconnected.'))
+        socket.on('account-suspended', () => { toast.error('Your account has been suspended.'); window.location.href = '/login' })
 
         return () => {
             ;['waiting','stranger-found','new-message','stranger-typing','stranger-stop-typing',
-              'stranger-disconnected','video-offer','video-answer','ice-candidate','video-ended'
+              'stranger-disconnected','video-offer','video-answer','ice-candidate','video-ended',
+              'ice-servers','report-submitted','account-suspended'
             ].forEach(e => socket.off(e))
         }
     }, [socket, roomId])
@@ -95,7 +101,7 @@ export default function Match() {
         typingTimeout.current = setTimeout(() => socket.emit('stop-typing', { roomId }), 1000)
     }
     const setupPeerConnection = async () => {
-        peerConnection.current = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] })
+        peerConnection.current = new RTCPeerConnection({ iceServers })
         peerConnection.current.onicecandidate = (event) => { if (event.candidate && socket) socket.emit('ice-candidate', { roomId, candidate: event.candidate }) }
         peerConnection.current.ontrack = (event) => { if (remoteVideoRef.current) remoteVideoRef.current.srcObject = event.streams[0] }
         if (localStream.current) localStream.current.getTracks().forEach(track => peerConnection.current.addTrack(track, localStream.current))
@@ -120,6 +126,12 @@ export default function Match() {
     }
     const toggleMute = () => { if (localStream.current) { localStream.current.getAudioTracks().forEach(t => { t.enabled = !t.enabled }); setIsMuted(!isMuted) } }
     const toggleCamera = () => { if (localStream.current) { localStream.current.getVideoTracks().forEach(t => { t.enabled = !t.enabled }); setIsCameraOff(!isCameraOff) } }
+
+    const reportUser = (reason) => {
+        if (!socket) return
+        socket.emit('report-user', { reason })
+        setShowReport(false)
+    }
 
     return (
         <div className="flex-1 flex flex-col">
@@ -226,6 +238,21 @@ export default function Match() {
                                     <button onClick={skipStranger} className="flex items-center gap-1.5 px-4 py-2.5 bg-gray-100 dark:bg-zinc-800 text-gray-700 dark:text-zinc-300 rounded-lg text-sm font-semibold hover:bg-gray-200 dark:hover:bg-zinc-700 transition-colors">
                                         <SkipForward size={14} /> Next
                                     </button>
+                                    <div className="relative">
+                                        <button onClick={() => setShowReport(!showReport)} className="p-2.5 text-amber-500 hover:bg-amber-50 dark:hover:bg-amber-900/20 rounded-lg transition-colors" title="Report user">
+                                            <AlertTriangle size={16} />
+                                        </button>
+                                        {showReport && (
+                                            <div className="absolute right-0 top-full mt-1 bg-white dark:bg-zinc-800 border border-gray-200 dark:border-zinc-700 rounded-lg shadow-lg py-1 w-48 z-50">
+                                                {['harassment', 'inappropriate', 'spam', 'underage', 'other'].map(reason => (
+                                                    <button key={reason} onClick={() => reportUser(reason)}
+                                                        className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-zinc-300 hover:bg-gray-100 dark:hover:bg-zinc-700 capitalize">
+                                                        {reason}
+                                                    </button>
+                                                ))}
+                                            </div>
+                                        )}
+                                    </div>
                                     <button onClick={skipStranger} className="p-2.5 text-red-500 hover:bg-red-50 rounded-lg transition-colors">
                                         <X size={16} />
                                     </button>

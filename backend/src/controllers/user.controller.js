@@ -113,6 +113,10 @@ const loginUser = asyncHandler(async (req, res) => {
         throw new ApiError(404, "USER NOT FOUND")
     }
 
+    if (user.isBanned) {
+        throw new ApiError(403, "Your account has been suspended due to policy violations.")
+    }
+
     const isPasswordValid = await user.isPasswordCorrect(password);
 
     if (!isPasswordValid) {

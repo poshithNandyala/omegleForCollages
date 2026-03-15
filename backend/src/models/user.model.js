@@ -30,6 +30,7 @@ const userSchema = new Schema(
         interests: [{ type: String, trim: true }],
         isOnline: { type: Boolean, default: false },
         lastSeen: { type: Date, default: Date.now },
+        isBanned: { type: Boolean, default: false },
         refreshToken: { type: String }
     },
     { timestamps: true }
