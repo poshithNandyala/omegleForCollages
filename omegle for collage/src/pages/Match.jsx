@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { Shuffle, X, Send, Video, VideoOff, Mic, MicOff, SkipForward, Filter, AlertTriangle, PhoneOff } from 'lucide-react'
+import { Shuffle, Send, Video, VideoOff, Mic, MicOff, SkipForward, Filter, AlertTriangle, PhoneOff } from 'lucide-react'
 import { Button, Select } from '../components/ui'
 import { getSocket } from '../lib/socket'
 import useAuthStore from '../stores/authStore'
@@ -15,12 +15,17 @@ export default function Match() {
     const [isTyping, setIsTyping] = useState(false)
     const [filters, setFilters] = useState({ college: 'any', gender: 'any' })
     const [showFilters, setShowFilters] = useState(false)
-    const [videoActive, setVideoActive] = useState(false)
     const [isMuted, setIsMuted] = useState(false)
     const [isCameraOff, setIsCameraOff] = useState(false)
-    const [iceServers, setIceServers] = useState([{ urls: 'stun:stun.l.google.com:19302' }, { urls: 'stun:stun1.l.google.com:19302' }])
+    const [iceServers, setIceServers] = useState([
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' }
+    ])
     const [showReport, setShowReport] = useState(false)
     const [peerState, setPeerState] = useState('new')
+    const [localReady, setLocalReady] = useState(false)
+    const [remoteReady, setRemoteReady] = useState(false)
+    const [chatOpen, setChatOpen] = useState(true)
 
     const messagesEndRef = useRef(null)
     const localVideoRef = useRef(null)
@@ -30,38 +35,33 @@ export default function Match() {
     const typingTimeout = useRef(null)
     const roomIdRef = useRef(null)
     const pendingCandidates = useRef([])
+    const isInitiator = useRef(false)
 
     const socket = getSocket()
 
     useEffect(() => { roomIdRef.current = roomId }, [roomId])
 
-    // Fix: Attach stream to video element whenever ref becomes available
+    // Attach local stream to video element whenever it's ready
     useEffect(() => {
         if (localVideoRef.current && localStream.current) {
             localVideoRef.current.srcObject = localStream.current
         }
-    }, [videoActive])
+    }, [localReady])
 
-    useEffect(() => {
-        if (remoteVideoRef.current && peerConnection.current) {
-            const pc = peerConnection.current
-            pc.ontrack = (event) => {
-                if (remoteVideoRef.current && event.streams[0]) {
-                    remoteVideoRef.current.srcObject = event.streams[0]
-                }
-            }
-        }
-    }, [videoActive])
-
-    const getMediaConstraints = useCallback(() => {
+    const getConstraints = useCallback(() => {
         const mobile = window.innerWidth < 768
-        if (mobile) {
-            return { video: { width: { ideal: 480 }, height: { ideal: 640 }, facingMode: 'user', frameRate: { ideal: 24 } }, audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } }
+        return {
+            video: {
+                width: { ideal: mobile ? 480 : 1280 },
+                height: { ideal: mobile ? 640 : 720 },
+                facingMode: 'user',
+                frameRate: { ideal: mobile ? 24 : 30 }
+            },
+            audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
         }
-        return { video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } }, audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } }
     }, [])
 
-    const cleanupVideo = useCallback(() => {
+    const cleanup = useCallback(() => {
         localStream.current?.getTracks().forEach(t => t.stop())
         localStream.current = null
         if (peerConnection.current) {
@@ -72,31 +72,35 @@ export default function Match() {
             peerConnection.current = null
         }
         pendingCandidates.current = []
+        isInitiator.current = false
         if (localVideoRef.current) localVideoRef.current.srcObject = null
         if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null
+        setLocalReady(false)
+        setRemoteReady(false)
         setPeerState('new')
     }, [])
 
-    const createPeerConnection = useCallback(() => {
+    const makePeer = useCallback(() => {
         const pc = new RTCPeerConnection({ iceServers, iceCandidatePoolSize: 10 })
 
-        pc.onicecandidate = (event) => {
-            if (event.candidate && socket) {
-                socket.emit('ice-candidate', { roomId: roomIdRef.current, candidate: event.candidate })
+        pc.onicecandidate = (e) => {
+            if (e.candidate && socket) {
+                socket.emit('ice-candidate', { roomId: roomIdRef.current, candidate: e.candidate })
             }
         }
 
-        pc.ontrack = (event) => {
-            if (remoteVideoRef.current && event.streams[0]) {
-                remoteVideoRef.current.srcObject = event.streams[0]
+        pc.ontrack = (e) => {
+            if (remoteVideoRef.current && e.streams[0]) {
+                remoteVideoRef.current.srcObject = e.streams[0]
+                setRemoteReady(true)
             }
         }
 
         pc.oniceconnectionstatechange = () => {
-            const state = pc.iceConnectionState
-            setPeerState(state)
-            if (state === 'failed') pc.restartIce()
-            if (state === 'disconnected') {
+            const s = pc.iceConnectionState
+            setPeerState(s)
+            if (s === 'failed') pc.restartIce()
+            if (s === 'disconnected') {
                 setTimeout(() => {
                     if (pc.iceConnectionState === 'disconnected') pc.restartIce()
                 }, 3000)
@@ -107,54 +111,82 @@ export default function Match() {
         return pc
     }, [iceServers, socket])
 
+    // Get camera and start call as initiator
+    const startCall = useCallback(async () => {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia(getConstraints())
+            localStream.current = stream
+            setLocalReady(true)
+            const pc = makePeer()
+            stream.getTracks().forEach(t => pc.addTrack(t, stream))
+            const offer = await pc.createOffer()
+            await pc.setLocalDescription(offer)
+            socket.emit('video-offer', { roomId: roomIdRef.current, offer })
+            isInitiator.current = true
+        } catch {
+            toast.error('Camera/mic access denied')
+        }
+    }, [getConstraints, makePeer, socket])
+
+    // Answer incoming call
+    const answerCall = useCallback(async (offer) => {
+        try {
+            if (!localStream.current) {
+                const stream = await navigator.mediaDevices.getUserMedia(getConstraints())
+                localStream.current = stream
+                setLocalReady(true)
+            }
+            const pc = makePeer()
+            localStream.current.getTracks().forEach(t => pc.addTrack(t, localStream.current))
+            await pc.setRemoteDescription(new RTCSessionDescription(offer))
+            for (const c of pendingCandidates.current) {
+                await pc.addIceCandidate(new RTCIceCandidate(c))
+            }
+            pendingCandidates.current = []
+            const answer = await pc.createAnswer()
+            await pc.setLocalDescription(answer)
+            socket.emit('video-answer', { roomId: roomIdRef.current, answer })
+        } catch (err) {
+            console.error('answer error:', err)
+            toast.error('Video connection failed')
+        }
+    }, [getConstraints, makePeer, socket])
+
     useEffect(() => {
         if (!socket) return
 
         socket.on('waiting', () => setStatus('searching'))
+
         socket.on('stranger-found', ({ roomId: rId, stranger: s }) => {
             setStatus('connected')
             setStranger(s)
             setRoomId(rId)
             setMessages([])
-            toast.success('Stranger found! Say hi 👋')
+            setChatOpen(true)
+            toast.success('Stranger found! 👋')
+            // AUTO-START video — initiator starts call immediately
+            setTimeout(() => startCall(), 500)
         })
+
         socket.on('new-message', ({ senderId, content, timestamp }) => {
             setMessages(prev => [...prev, { fromMe: senderId === socket.id, content, timestamp }])
         })
         socket.on('stranger-typing', () => setIsTyping(true))
         socket.on('stranger-stop-typing', () => setIsTyping(false))
+
         socket.on('stranger-disconnected', () => {
             setStatus('idle')
             setStranger(null)
             setRoomId(null)
             setMessages(prev => [...prev, { system: true, content: 'Stranger disconnected' }])
-            cleanupVideo()
-            setVideoActive(false)
+            cleanup()
             toast('Stranger left', { icon: '👋' })
         })
 
         socket.on('video-offer', async ({ offer }) => {
-            try {
-                if (!localStream.current) {
-                    const stream = await navigator.mediaDevices.getUserMedia(getMediaConstraints())
-                    localStream.current = stream
-                }
-                const pc = createPeerConnection()
-                localStream.current.getTracks().forEach(track => pc.addTrack(track, localStream.current))
-                await pc.setRemoteDescription(new RTCSessionDescription(offer))
-                for (const c of pendingCandidates.current) {
-                    await pc.addIceCandidate(new RTCIceCandidate(c))
-                }
-                pendingCandidates.current = []
-                const answer = await pc.createAnswer()
-                await pc.setLocalDescription(answer)
-                socket.emit('video-answer', { roomId: roomIdRef.current, answer })
-                setVideoActive(true)
-            } catch (err) {
-                console.error('video-offer error:', err)
-                toast.error('Failed to start video')
-            }
+            await answerCall(offer)
         })
+
         socket.on('video-answer', async ({ answer }) => {
             try {
                 await peerConnection.current?.setRemoteDescription(new RTCSessionDescription(answer))
@@ -163,9 +195,10 @@ export default function Match() {
                 }
                 pendingCandidates.current = []
             } catch (err) {
-                console.error('video-answer error:', err)
+                console.error('answer-set error:', err)
             }
         })
+
         socket.on('ice-candidate', async ({ candidate }) => {
             try {
                 if (peerConnection.current?.remoteDescription) {
@@ -173,19 +206,17 @@ export default function Match() {
                 } else {
                     pendingCandidates.current.push(candidate)
                 }
-            } catch (err) {
-                console.error('ice-candidate error:', err)
-            }
+            } catch {}
         })
+
         socket.on('video-ended', () => {
-            cleanupVideo()
-            setVideoActive(false)
-            toast('Video call ended', { icon: '📹' })
+            cleanup()
         })
-        socket.on('ice-servers', ({ iceServers: servers }) => setIceServers(servers))
+
+        socket.on('ice-servers', ({ iceServers: s }) => setIceServers(s))
         socket.on('report-submitted', () => toast.success('Report submitted'))
         socket.on('account-suspended', () => {
-            toast.error('Your account has been suspended')
+            toast.error('Account suspended')
             window.location.href = '/login'
         })
 
@@ -195,13 +226,13 @@ export default function Match() {
               'ice-servers','report-submitted','account-suspended'
             ].forEach(e => socket.off(e))
         }
-    }, [socket, cleanupVideo, createPeerConnection, getMediaConstraints])
+    }, [socket, cleanup, startCall, answerCall])
 
     useEffect(() => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
     }, [messages])
 
-    useEffect(() => () => cleanupVideo(), [cleanupVideo])
+    useEffect(() => () => cleanup(), [cleanup])
 
     const findStranger = () => {
         if (!socket) { toast.error('Not connected'); return }
@@ -211,11 +242,10 @@ export default function Match() {
         socket.emit('find-stranger', filters)
     }
 
-    const skipStranger = () => {
+    const disconnect = () => {
         if (!socket) return
         socket.emit('skip-stranger')
-        cleanupVideo()
-        setVideoActive(false)
+        cleanup()
         setStatus('idle')
         setStranger(null)
         setRoomId(null)
@@ -235,7 +265,7 @@ export default function Match() {
         socket.emit('stop-typing', { roomId })
     }
 
-    const handleInputChange = (e) => {
+    const handleInput = (e) => {
         setInput(e.target.value)
         if (!socket || !roomId) return
         socket.emit('typing', { roomId })
@@ -243,38 +273,17 @@ export default function Match() {
         typingTimeout.current = setTimeout(() => socket.emit('stop-typing', { roomId }), 1000)
     }
 
-    const startVideo = async () => {
-        try {
-            const stream = await navigator.mediaDevices.getUserMedia(getMediaConstraints())
-            localStream.current = stream
-            const pc = createPeerConnection()
-            stream.getTracks().forEach(track => pc.addTrack(track, stream))
-            const offer = await pc.createOffer()
-            await pc.setLocalDescription(offer)
-            socket.emit('video-offer', { roomId, offer })
-            setVideoActive(true)
-        } catch {
-            toast.error('Camera/mic access denied')
-        }
-    }
-
-    const endVideo = () => {
-        socket?.emit('end-video', { roomId })
-        cleanupVideo()
-        setVideoActive(false)
-    }
-
     const toggleMute = () => {
         if (localStream.current) {
             localStream.current.getAudioTracks().forEach(t => { t.enabled = !t.enabled })
-            setIsMuted(!isMuted)
+            setIsMuted(p => !p)
         }
     }
 
-    const toggleCamera = () => {
+    const toggleCam = () => {
         if (localStream.current) {
             localStream.current.getVideoTracks().forEach(t => { t.enabled = !t.enabled })
-            setIsCameraOff(!isCameraOff)
+            setIsCameraOff(p => !p)
         }
     }
 
@@ -284,237 +293,231 @@ export default function Match() {
         setShowReport(false)
     }
 
-    // ==================== OMEGLE-STYLE LAYOUT ====================
-
-    // IDLE STATE — Landing
+    // ===================== IDLE =====================
     if (status === 'idle') {
         return (
-            <div className="flex-1 flex flex-col h-[calc(100vh-56px)] sm:h-[calc(100vh-64px)]">
-                <div className="flex-1 flex flex-col items-center justify-center px-4 sm:px-6">
-                    <div className="w-20 h-20 sm:w-24 sm:h-24 bg-brand-light dark:bg-brand/10 rounded-3xl flex items-center justify-center mb-6 sm:mb-8">
-                        <Shuffle size={36} className="text-brand" />
-                    </div>
-                    <h1 className="text-2xl sm:text-4xl font-extrabold text-gray-900 dark:text-zinc-100 mb-3 text-center">Ready to connect?</h1>
-                    <p className="text-gray-500 dark:text-zinc-400 mb-6 sm:mb-8 max-w-md text-center text-sm sm:text-lg">
-                        You'll be matched with a random verified college student for video or text chat.
-                    </p>
-
-                    {/* Filters inline */}
-                    <div className="w-full max-w-lg mb-6">
-                        <button onClick={() => setShowFilters(!showFilters)}
-                            className={`mx-auto flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-colors mb-4 ${
-                                showFilters ? 'bg-brand-light text-brand' : 'bg-gray-100 dark:bg-zinc-800 text-gray-600 dark:text-zinc-300'
-                            }`}>
-                            <Filter size={14} /> Filters
-                        </button>
-                        {showFilters && (
-                            <div className="grid grid-cols-2 gap-3 bg-white dark:bg-zinc-900 rounded-xl border border-gray-200 dark:border-zinc-800 p-4">
-                                <Select label="College" value={filters.college}
-                                    onChange={(e) => setFilters({ ...filters, college: e.target.value })}
-                                    options={[{ value: 'any', label: 'Any College' }, { value: 'same', label: 'Same College' }]} />
-                                <Select label="Gender" value={filters.gender}
-                                    onChange={(e) => setFilters({ ...filters, gender: e.target.value })}
-                                    options={[{ value: 'any', label: 'Anyone' }, { value: 'male', label: 'Male' }, { value: 'female', label: 'Female' }, { value: 'other', label: 'Other' }]} />
-                            </div>
-                        )}
-                    </div>
-
-                    <Button onClick={findStranger} size="lg" className="px-10 py-3.5 text-base">
-                        <Shuffle size={20} /> Start
-                    </Button>
+            <div className="flex-1 flex flex-col items-center justify-center h-[calc(100vh-56px)] sm:h-[calc(100vh-64px)] bg-gray-950 px-4">
+                <div className="w-20 h-20 sm:w-24 sm:h-24 bg-brand/10 rounded-3xl flex items-center justify-center mb-6 sm:mb-8">
+                    <Shuffle size={36} className="text-brand" />
                 </div>
+                <h1 className="text-2xl sm:text-4xl font-extrabold text-white mb-3 text-center">Start Matching</h1>
+                <p className="text-gray-400 mb-6 sm:mb-8 max-w-md text-center text-sm sm:text-lg">
+                    Video chat with random verified college students. Camera starts automatically.
+                </p>
+
+                <div className="w-full max-w-sm mb-6">
+                    <button onClick={() => setShowFilters(!showFilters)}
+                        className={`mx-auto flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-colors mb-3 ${
+                            showFilters ? 'bg-brand/20 text-brand' : 'bg-white/10 text-gray-400'
+                        }`}>
+                        <Filter size={14} /> Filters
+                    </button>
+                    {showFilters && (
+                        <div className="grid grid-cols-2 gap-3 bg-white/5 rounded-xl border border-white/10 p-4">
+                            <Select label="College" value={filters.college}
+                                onChange={(e) => setFilters({ ...filters, college: e.target.value })}
+                                options={[{ value: 'any', label: 'Any College' }, { value: 'same', label: 'Same College' }]} />
+                            <Select label="Gender" value={filters.gender}
+                                onChange={(e) => setFilters({ ...filters, gender: e.target.value })}
+                                options={[{ value: 'any', label: 'Anyone' }, { value: 'male', label: 'Male' }, { value: 'female', label: 'Female' }, { value: 'other', label: 'Other' }]} />
+                        </div>
+                    )}
+                </div>
+
+                <Button onClick={findStranger} size="lg" className="px-10 py-3.5 text-base">
+                    <Video size={20} /> Start
+                </Button>
             </div>
         )
     }
 
-    // SEARCHING STATE
+    // ===================== SEARCHING =====================
     if (status === 'searching') {
         return (
-            <div className="flex-1 flex flex-col items-center justify-center h-[calc(100vh-56px)] sm:h-[calc(100vh-64px)] px-4">
-                <div className="w-16 h-16 border-[3px] border-gray-200 dark:border-zinc-700 border-t-brand rounded-full animate-spin mb-6" />
-                <h2 className="text-xl sm:text-3xl font-bold text-gray-900 dark:text-zinc-100 mb-2">Looking for someone...</h2>
-                <p className="text-gray-500 dark:text-zinc-400 mb-6 text-sm sm:text-base">Hang tight, we're finding a match</p>
-                <Button variant="outline" onClick={stopSearching}>Cancel</Button>
+            <div className="flex-1 flex flex-col items-center justify-center h-[calc(100vh-56px)] sm:h-[calc(100vh-64px)] bg-gray-950 px-4">
+                <div className="w-16 h-16 border-[3px] border-gray-700 border-t-brand rounded-full animate-spin mb-6" />
+                <h2 className="text-xl sm:text-3xl font-bold text-white mb-2">Finding someone...</h2>
+                <p className="text-gray-400 mb-6 text-sm sm:text-base">Camera will start when matched</p>
+                <Button variant="outline" onClick={stopSearching} className="border-gray-600 text-gray-300">Cancel</Button>
             </div>
         )
     }
 
-    // ==================== CONNECTED — OMEGLE LAYOUT ====================
-    // Top: Video (side by side) | Bottom: Chat (transparent over dark bg)
+    // ===================== CONNECTED — FULL OMEGLE LAYOUT =====================
     return (
-        <div className="flex flex-col h-[calc(100vh-56px)] sm:h-[calc(100vh-64px)] bg-gray-950 overflow-hidden">
+        <div className="flex flex-col h-[calc(100vh-56px)] sm:h-[calc(100vh-64px)] bg-black overflow-hidden relative">
 
-            {/* ===== VIDEO AREA — Takes up top portion ===== */}
-            <div className={`relative shrink-0 ${videoActive ? 'flex-1 min-h-0' : 'h-0'}`}>
-                {videoActive && (
-                    <div className="grid grid-cols-2 h-full gap-[2px]">
-                        {/* Local Video (You) */}
-                        <div className="relative bg-gray-900 overflow-hidden">
-                            <video
-                                ref={localVideoRef}
-                                autoPlay muted playsInline
-                                className="w-full h-full object-cover"
-                                style={{ transform: 'scaleX(-1)' }}
-                            />
-                            {isCameraOff && (
-                                <div className="absolute inset-0 flex items-center justify-center bg-gray-900">
-                                    <div className="w-16 h-16 sm:w-20 sm:h-20 rounded-full bg-gray-800 flex items-center justify-center">
-                                        <span className="text-2xl sm:text-3xl font-bold text-gray-400">{user?.fullName?.[0] || 'Y'}</span>
-                                    </div>
+            {/* ===== FULL SCREEN VIDEO — SIDE BY SIDE ===== */}
+            <div className="flex-1 grid grid-cols-2 gap-[1px] min-h-0">
+
+                {/* YOUR VIDEO */}
+                <div className="relative bg-gray-900 overflow-hidden">
+                    <video
+                        ref={localVideoRef}
+                        autoPlay muted playsInline
+                        className="absolute inset-0 w-full h-full object-cover"
+                        style={{ transform: 'scaleX(-1)' }}
+                    />
+                    {(!localReady || isCameraOff) && (
+                        <div className="absolute inset-0 flex items-center justify-center bg-gray-900">
+                            <div className="text-center">
+                                <div className="w-14 h-14 sm:w-20 sm:h-20 rounded-full bg-gray-800 flex items-center justify-center mx-auto mb-2">
+                                    <span className="text-xl sm:text-3xl font-bold text-gray-500">{user?.fullName?.[0] || 'Y'}</span>
                                 </div>
-                            )}
-                            <span className="absolute bottom-2 left-2 sm:bottom-3 sm:left-3 text-white text-[10px] sm:text-xs bg-black/60 px-2 py-0.5 sm:px-2.5 sm:py-1 rounded-md font-medium">You</span>
-                        </div>
-
-                        {/* Remote Video (Stranger) */}
-                        <div className="relative bg-gray-900 overflow-hidden">
-                            <video
-                                ref={remoteVideoRef}
-                                autoPlay playsInline
-                                className="w-full h-full object-cover"
-                            />
-                            {peerState !== 'connected' && (
-                                <div className="absolute inset-0 flex items-center justify-center bg-gray-900/90">
-                                    <div className="text-center">
-                                        <div className="w-8 h-8 sm:w-10 sm:h-10 border-[3px] border-zinc-700 border-t-brand rounded-full animate-spin mx-auto mb-2 sm:mb-3" />
-                                        <p className="text-[10px] sm:text-sm text-gray-400">Connecting...</p>
-                                    </div>
-                                </div>
-                            )}
-                            <span className="absolute bottom-2 left-2 sm:bottom-3 sm:left-3 text-white text-[10px] sm:text-xs bg-black/60 px-2 py-0.5 sm:px-2.5 sm:py-1 rounded-md font-medium">{stranger?.fullName || 'Stranger'}</span>
-                            {peerState === 'connected' && (
-                                <div className="absolute top-2 left-2 sm:top-3 sm:left-3 flex items-center gap-1.5">
-                                    <div className="w-2 h-2 rounded-full bg-green-500" />
-                                    <span className="text-[10px] uppercase tracking-wider text-green-400 font-medium hidden sm:inline">Live</span>
-                                </div>
-                            )}
-                        </div>
-                    </div>
-                )}
-
-                {/* Video Controls — floating center bottom */}
-                {videoActive && (
-                    <div className="absolute bottom-3 sm:bottom-5 left-1/2 -translate-x-1/2 flex items-center gap-2 sm:gap-3 z-10">
-                        <button onClick={toggleMute}
-                            className={`w-10 h-10 sm:w-12 sm:h-12 rounded-full flex items-center justify-center transition-all ${isMuted ? 'bg-red-500 text-white' : 'bg-white/20 backdrop-blur-sm text-white hover:bg-white/30'}`}>
-                            {isMuted ? <MicOff size={18} /> : <Mic size={18} />}
-                        </button>
-                        <button onClick={endVideo}
-                            className="w-12 h-12 sm:w-14 sm:h-14 rounded-full bg-red-500 text-white flex items-center justify-center hover:bg-red-600 transition-all shadow-lg shadow-red-500/30">
-                            <PhoneOff size={20} />
-                        </button>
-                        <button onClick={toggleCamera}
-                            className={`w-10 h-10 sm:w-12 sm:h-12 rounded-full flex items-center justify-center transition-all ${isCameraOff ? 'bg-red-500 text-white' : 'bg-white/20 backdrop-blur-sm text-white hover:bg-white/30'}`}>
-                            {isCameraOff ? <VideoOff size={18} /> : <Video size={18} />}
-                        </button>
-                    </div>
-                )}
-            </div>
-
-            {/* ===== CHAT AREA — Bottom portion, dark bg ===== */}
-            <div className={`flex flex-col bg-gray-950 ${videoActive ? 'h-[45%] sm:h-[40%]' : 'flex-1'} min-h-0`}>
-
-                {/* Top bar — stranger info + controls */}
-                <div className="flex items-center justify-between px-3 sm:px-5 py-2.5 sm:py-3 border-b border-white/10 shrink-0">
-                    <div className="flex items-center gap-2 sm:gap-3 min-w-0">
-                        {stranger?.avatar ? (
-                            <img src={stranger.avatar} alt="" className="w-8 h-8 sm:w-9 sm:h-9 rounded-full object-cover shrink-0 ring-2 ring-brand/30" />
-                        ) : (
-                            <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-full bg-brand/20 flex items-center justify-center text-brand text-xs font-bold shrink-0">
-                                {stranger?.fullName?.[0] || '?'}
-                            </div>
-                        )}
-                        <div className="min-w-0">
-                            <p className="font-semibold text-white text-sm truncate">{stranger?.fullName || 'Stranger'}</p>
-                            <p className="text-[10px] sm:text-xs text-gray-500 truncate">{stranger?.college || 'College student'}</p>
-                        </div>
-                    </div>
-
-                    <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
-                        {!videoActive && (
-                            <button onClick={startVideo} className="p-2 bg-brand/20 text-brand rounded-lg hover:bg-brand hover:text-white transition-all" title="Video call">
-                                <Video size={16} />
-                            </button>
-                        )}
-                        <button onClick={skipStranger} className="hidden sm:flex items-center gap-1.5 px-3 py-2 bg-white/10 text-gray-300 rounded-lg text-xs font-semibold hover:bg-white/20 transition-colors">
-                            <SkipForward size={13} /> Next
-                        </button>
-                        <button onClick={skipStranger} className="sm:hidden p-2 bg-white/10 text-gray-300 rounded-lg">
-                            <SkipForward size={15} />
-                        </button>
-                        <div className="relative">
-                            <button onClick={() => setShowReport(!showReport)} className="p-2 text-amber-400 hover:bg-amber-500/10 rounded-lg transition-colors" title="Report">
-                                <AlertTriangle size={14} />
-                            </button>
-                            {showReport && (
-                                <div className="absolute right-0 bottom-full mb-1 bg-gray-800 border border-gray-700 rounded-lg shadow-xl py-1 w-44 z-50">
-                                    {['harassment', 'inappropriate', 'spam', 'underage', 'other'].map(reason => (
-                                        <button key={reason} onClick={() => reportUser(reason)}
-                                            className="w-full text-left px-4 py-2.5 text-sm text-gray-300 hover:bg-gray-700 capitalize">
-                                            {reason}
-                                        </button>
-                                    ))}
-                                </div>
-                            )}
-                        </div>
-                        <button onClick={skipStranger} className="p-2 text-red-400 hover:bg-red-500/10 rounded-lg transition-colors" title="Disconnect">
-                            <X size={16} />
-                        </button>
-                    </div>
-                </div>
-
-                {/* Messages */}
-                <div className="flex-1 overflow-y-auto px-3 sm:px-5 py-3 space-y-2 min-h-0 no-scrollbar">
-                    <div className="text-center py-1.5">
-                        <span className="text-[10px] sm:text-xs text-gray-600 bg-white/5 px-3 py-1 rounded-full">
-                            Connected with {stranger?.fullName || 'a stranger'}
-                        </span>
-                    </div>
-                    {messages.map((msg, i) => (
-                        msg.system ? (
-                            <div key={i} className="text-center py-1">
-                                <span className="text-[10px] sm:text-xs text-gray-600">{msg.content}</span>
-                            </div>
-                        ) : (
-                            <div key={i} className={`flex ${msg.fromMe ? 'justify-end' : 'justify-start'}`}>
-                                <div className={`max-w-[80%] sm:max-w-[65%] px-3.5 sm:px-4 py-2 sm:py-2.5 rounded-2xl text-sm leading-relaxed ${
-                                    msg.fromMe
-                                        ? 'bg-brand text-white rounded-br-md'
-                                        : 'bg-white/10 text-gray-200 rounded-bl-md'
-                                }`}>
-                                    {msg.content}
-                                </div>
-                            </div>
-                        )
-                    ))}
-                    {isTyping && (
-                        <div className="flex justify-start">
-                            <div className="bg-white/10 px-4 py-3 rounded-2xl rounded-bl-md">
-                                <div className="flex gap-1">
-                                    <div className="w-1.5 h-1.5 bg-gray-500 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-                                    <div className="w-1.5 h-1.5 bg-gray-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-                                    <div className="w-1.5 h-1.5 bg-gray-500 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
-                                </div>
+                                {!localReady && <p className="text-xs text-gray-600 mt-2">Starting camera...</p>}
                             </div>
                         </div>
                     )}
-                    <div ref={messagesEndRef} />
+                    <div className="absolute bottom-2 left-2 sm:bottom-3 sm:left-3 bg-black/60 backdrop-blur-sm px-2 py-0.5 sm:px-2.5 sm:py-1 rounded-md">
+                        <span className="text-white text-[10px] sm:text-xs font-medium">You</span>
+                    </div>
                 </div>
 
-                {/* Input */}
-                <form onSubmit={sendMessage} className="px-3 sm:px-5 py-2.5 sm:py-3 border-t border-white/10 flex gap-2 shrink-0">
-                    <input
-                        value={input} onChange={handleInputChange}
-                        placeholder="Type a message..."
-                        className="flex-1 h-10 sm:h-11 px-4 bg-white/10 border border-white/10 text-white placeholder:text-gray-500 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-brand focus:border-transparent"
-                        autoComplete="off"
+                {/* STRANGER VIDEO */}
+                <div className="relative bg-gray-900 overflow-hidden">
+                    <video
+                        ref={remoteVideoRef}
+                        autoPlay playsInline
+                        className="absolute inset-0 w-full h-full object-cover"
                     />
-                    <button type="submit" disabled={!input.trim()}
-                        className="h-10 sm:h-11 w-10 sm:w-auto sm:px-5 bg-brand text-white rounded-xl hover:bg-brand-hover disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2 font-semibold text-sm shrink-0">
-                        <Send size={16} />
-                        <span className="hidden sm:inline">Send</span>
+                    {!remoteReady && (
+                        <div className="absolute inset-0 flex items-center justify-center bg-gray-900">
+                            <div className="text-center">
+                                <div className="w-14 h-14 sm:w-20 sm:h-20 rounded-full bg-gray-800 flex items-center justify-center mx-auto mb-2">
+                                    <span className="text-xl sm:text-3xl font-bold text-gray-500">{stranger?.fullName?.[0] || '?'}</span>
+                                </div>
+                                <div className="w-6 h-6 border-2 border-gray-700 border-t-brand rounded-full animate-spin mx-auto mt-3" />
+                                <p className="text-xs text-gray-600 mt-2">Connecting...</p>
+                            </div>
+                        </div>
+                    )}
+                    <div className="absolute bottom-2 left-2 sm:bottom-3 sm:left-3 bg-black/60 backdrop-blur-sm px-2 py-0.5 sm:px-2.5 sm:py-1 rounded-md flex items-center gap-1.5">
+                        {remoteReady && peerState === 'connected' && <div className="w-1.5 h-1.5 rounded-full bg-green-500" />}
+                        <span className="text-white text-[10px] sm:text-xs font-medium">{stranger?.fullName || 'Stranger'}</span>
+                    </div>
+                    {stranger?.college && (
+                        <div className="absolute top-2 left-2 sm:top-3 sm:left-3 bg-black/50 backdrop-blur-sm px-2 py-0.5 rounded-md">
+                            <span className="text-gray-300 text-[9px] sm:text-[11px]">{stranger.college}</span>
+                        </div>
+                    )}
+                </div>
+            </div>
+
+            {/* ===== VIDEO CONTROLS — Floating center ===== */}
+            <div className="absolute left-1/2 -translate-x-1/2 bottom-[calc(40%+8px)] sm:bottom-[calc(35%+12px)] flex items-center gap-3 sm:gap-4 z-30">
+                <button onClick={toggleMute}
+                    className={`w-11 h-11 sm:w-12 sm:h-12 rounded-full flex items-center justify-center transition-all shadow-lg ${
+                        isMuted ? 'bg-red-500 text-white' : 'bg-black/40 backdrop-blur-md text-white hover:bg-black/60'
+                    }`}>
+                    {isMuted ? <MicOff size={20} /> : <Mic size={20} />}
+                </button>
+                <button onClick={disconnect}
+                    className="w-14 h-14 sm:w-16 sm:h-16 rounded-full bg-red-500 text-white flex items-center justify-center hover:bg-red-600 transition-all shadow-xl shadow-red-500/30">
+                    <PhoneOff size={24} />
+                </button>
+                <button onClick={toggleCam}
+                    className={`w-11 h-11 sm:w-12 sm:h-12 rounded-full flex items-center justify-center transition-all shadow-lg ${
+                        isCameraOff ? 'bg-red-500 text-white' : 'bg-black/40 backdrop-blur-md text-white hover:bg-black/60'
+                    }`}>
+                    {isCameraOff ? <VideoOff size={20} /> : <Video size={20} />}
+                </button>
+                <button onClick={() => { disconnect(); findStranger() }}
+                    className="w-11 h-11 sm:w-12 sm:h-12 rounded-full bg-brand text-white flex items-center justify-center hover:bg-brand-hover transition-all shadow-lg">
+                    <SkipForward size={20} />
+                </button>
+            </div>
+
+            {/* Report button — top right */}
+            <div className="absolute top-2 right-2 sm:top-3 sm:right-3 z-30">
+                <div className="relative">
+                    <button onClick={() => setShowReport(!showReport)}
+                        className="w-9 h-9 sm:w-10 sm:h-10 rounded-full bg-black/40 backdrop-blur-md text-amber-400 flex items-center justify-center hover:bg-black/60 transition-all">
+                        <AlertTriangle size={16} />
                     </button>
-                </form>
+                    {showReport && (
+                        <div className="absolute right-0 top-full mt-1 bg-gray-900 border border-gray-700 rounded-xl shadow-2xl py-1.5 w-44 z-50">
+                            {['harassment', 'inappropriate', 'spam', 'underage', 'other'].map(reason => (
+                                <button key={reason} onClick={() => reportUser(reason)}
+                                    className="w-full text-left px-4 py-2.5 text-sm text-gray-300 hover:bg-gray-800 capitalize first:rounded-t-xl last:rounded-b-xl">
+                                    {reason}
+                                </button>
+                            ))}
+                        </div>
+                    )}
+                </div>
+            </div>
+
+            {/* ===== CHAT OVERLAY — Bottom of screen, on top of video ===== */}
+            <div className={`absolute bottom-0 left-0 right-0 z-20 transition-all duration-300 ${
+                chatOpen ? 'h-[40%] sm:h-[35%]' : 'h-12'
+            }`}>
+
+                {/* Chat toggle handle */}
+                <button onClick={() => setChatOpen(p => !p)}
+                    className="absolute -top-0 left-0 right-0 h-10 flex items-center justify-center cursor-pointer z-10">
+                    <div className="flex items-center gap-2 bg-black/60 backdrop-blur-md px-4 py-1.5 rounded-full">
+                        <div className="w-8 h-1 bg-gray-500 rounded-full" />
+                        {!chatOpen && messages.length > 0 && (
+                            <span className="text-[10px] text-gray-400 font-medium">{messages.length} messages</span>
+                        )}
+                    </div>
+                </button>
+
+                {chatOpen && (
+                    <div className="h-full flex flex-col bg-gradient-to-t from-black/90 via-black/70 to-transparent pt-6">
+                        {/* Messages */}
+                        <div className="flex-1 overflow-y-auto px-3 sm:px-5 py-2 space-y-1.5 min-h-0 no-scrollbar">
+                            {messages.length === 0 && (
+                                <div className="text-center py-3">
+                                    <span className="text-xs text-gray-600">Say something...</span>
+                                </div>
+                            )}
+                            {messages.map((msg, i) => (
+                                msg.system ? (
+                                    <div key={i} className="text-center py-1">
+                                        <span className="text-[10px] text-gray-600">{msg.content}</span>
+                                    </div>
+                                ) : (
+                                    <div key={i} className={`flex ${msg.fromMe ? 'justify-end' : 'justify-start'}`}>
+                                        <div className={`max-w-[80%] px-3 py-1.5 sm:px-4 sm:py-2 rounded-2xl text-sm leading-relaxed ${
+                                            msg.fromMe
+                                                ? 'bg-brand text-white rounded-br-sm'
+                                                : 'bg-white/15 text-white rounded-bl-sm'
+                                        }`}>
+                                            {msg.content}
+                                        </div>
+                                    </div>
+                                )
+                            ))}
+                            {isTyping && (
+                                <div className="flex justify-start">
+                                    <div className="bg-white/15 px-4 py-2.5 rounded-2xl rounded-bl-sm">
+                                        <div className="flex gap-1">
+                                            <div className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                                            <div className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                                            <div className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+                            <div ref={messagesEndRef} />
+                        </div>
+
+                        {/* Input */}
+                        <form onSubmit={sendMessage} className="px-3 sm:px-5 py-2 sm:py-3 flex gap-2 shrink-0">
+                            <input
+                                value={input} onChange={handleInput}
+                                placeholder="Type a message..."
+                                className="flex-1 h-10 sm:h-11 px-4 bg-white/10 border border-white/10 text-white placeholder:text-gray-500 rounded-full text-sm focus:outline-none focus:ring-2 focus:ring-brand/50 focus:border-transparent backdrop-blur-sm"
+                                autoComplete="off"
+                            />
+                            <button type="submit" disabled={!input.trim()}
+                                className="h-10 sm:h-11 w-10 sm:w-11 bg-brand text-white rounded-full hover:bg-brand-hover disabled:opacity-30 disabled:cursor-not-allowed transition-colors flex items-center justify-center shrink-0">
+                                <Send size={16} />
+                            </button>
+                        </form>
+                    </div>
+                )}
             </div>
         </div>
     )

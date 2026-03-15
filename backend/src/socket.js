@@ -64,20 +64,27 @@ export const initializeSocket = async (server) => {
 
         await User.findByIdAndUpdate(socket.userId, { isOnline: true })
 
-        // Send TURN server config if available
-        if (process.env.TURN_URL) {
-            socket.emit("ice-servers", {
-                iceServers: [
-                    { urls: "stun:stun.l.google.com:19302" },
-                    { urls: "stun:stun1.l.google.com:19302" },
-                    {
-                        urls: process.env.TURN_URL,
-                        username: process.env.TURN_USERNAME || "",
-                        credential: process.env.TURN_CREDENTIAL || ""
-                    }
-                ]
+        // Send ICE servers (STUN + TURN)
+        const turnHost = process.env.TURN_URL?.replace(/^turns?:/, '').split(':')[0]
+        const turnUser = process.env.TURN_USERNAME || ""
+        const turnCred = process.env.TURN_CREDENTIAL || ""
+        const iceServers = [
+            { urls: "stun:stun.l.google.com:19302" },
+            { urls: "stun:stun1.l.google.com:19302" }
+        ]
+        if (turnHost && turnUser) {
+            iceServers.push({
+                urls: [
+                    `turn:${turnHost}:80`,
+                    `turn:${turnHost}:80?transport=tcp`,
+                    `turn:${turnHost}:443`,
+                    `turns:${turnHost}:443?transport=tcp`
+                ],
+                username: turnUser,
+                credential: turnCred
             })
         }
+        socket.emit("ice-servers", { iceServers })
 
         // ========== MATCHING ==========
 
