@@ -1,4 +1,9 @@
 import winston from "winston"
+import fs from "fs"
+
+if (process.env.NODE_ENV === "production" && !fs.existsSync("logs")) {
+    fs.mkdirSync("logs", { recursive: true })
+}
 
 const logger = winston.createLogger({
     level: process.env.LOG_LEVEL || "info",

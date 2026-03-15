@@ -1,6 +1,11 @@
 import dotenv from 'dotenv'
+import fs from 'fs'
 import { createServer } from 'http'
 import { connectDB } from "./db/index.js"
+
+if (!fs.existsSync('./public/temp')) {
+    fs.mkdirSync('./public/temp', { recursive: true })
+}
 import { app } from './app.js'
 import { initializeSocket } from './socket.js'
 import logger from './utils/logger.js'
