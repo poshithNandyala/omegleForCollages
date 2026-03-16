@@ -65,3 +65,90 @@ html.dark body {
     -ms-overflow-style: none;
     scrollbar-width: none;
 }
+
+/* ========== MATCH PAGE ANIMATIONS ========== */
+
+@keyframes float-up {
+    0% { opacity: 0; transform: translateY(30px) scale(0.95); }
+    100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes pulse-ring {
+    0% { transform: scale(0.8); opacity: 0.5; }
+    50% { transform: scale(1.15); opacity: 0; }
+    100% { transform: scale(0.8); opacity: 0; }
+}
+@keyframes shimmer {
+    0% { background-position: -200% 0; }
+    100% { background-position: 200% 0; }
+}
+@keyframes slide-up-fade {
+    0% { opacity: 0; transform: translateY(20px); }
+    100% { opacity: 1; transform: translateY(0); }
+}
+@keyframes glow-pulse {
+    0%, 100% { box-shadow: 0 0 20px rgba(124, 58, 237, 0.3); }
+    50% { box-shadow: 0 0 40px rgba(124, 58, 237, 0.6), 0 0 80px rgba(124, 58, 237, 0.2); }
+}
+@keyframes orbit {
+    from { transform: rotate(0deg) translateX(60px) rotate(0deg); }
+    to { transform: rotate(360deg) translateX(60px) rotate(-360deg); }
+}
+@keyframes swipe-hint {
+    0%, 100% { transform: translateX(0); opacity: 0.6; }
+    50% { transform: translateX(-12px); opacity: 1; }
+}
+@keyframes count-pulse {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.2); }
+}
+@keyframes fade-in {
+    0% { opacity: 0; }
+    100% { opacity: 1; }
+}
+
+.animate-float-up { animation: float-up 0.6s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+.animate-pulse-ring { animation: pulse-ring 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+.animate-shimmer {
+    background: linear-gradient(90deg, transparent 0%, rgba(124,58,237,0.08) 50%, transparent 100%);
+    background-size: 200% 100%;
+    animation: shimmer 2.5s linear infinite;
+}
+.animate-slide-up { animation: slide-up-fade 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+.animate-glow-pulse { animation: glow-pulse 2.5s ease-in-out infinite; }
+.animate-orbit { animation: orbit 8s linear infinite; }
+.animate-swipe-hint { animation: swipe-hint 2s ease-in-out infinite; }
+.animate-count-pulse { animation: count-pulse 0.3s ease-out; }
+.animate-fade-in { animation: fade-in 0.3s ease-out forwards; }
+
+/* Swipe overlay indicators */
+.swipe-indicator {
+    transition: opacity 0.15s ease-out;
+    pointer-events: none;
+}
+
+/* Glass morphism */
+.glass {
+    background: rgba(255, 255, 255, 0.05);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+}
+.glass-dark {
+    background: rgba(0, 0, 0, 0.5);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+}
+
+/* Connection quality dots */
+.conn-excellent { color: #22c55e; }
+.conn-good { color: #eab308; }
+.conn-poor { color: #ef4444; }
+
+/* Video connected flash */
+@keyframes connected-flash {
+    0% { opacity: 1; }
+    100% { opacity: 0; }
+}
+.animate-connected-flash {
+    animation: connected-flash 1.5s ease-out forwards;
+}
